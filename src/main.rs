@@ -33,14 +33,15 @@ fn main() {
     let target_path: String = settings.get("target_path").unwrap();
     debouncer
         .watcher()
-        .watch(Path::new(&target_path), RecursiveMode::Recursive)
+        .watch(Path::new(&target_path), RecursiveMode::NonRecursive)
         .unwrap();
     debouncer
         .cache()
-        .add_root(Path::new(&target_path), RecursiveMode::Recursive);
+        .add_root(Path::new(&target_path), RecursiveMode::NonRecursive);
 
     let client = Client::new();
-    let url: String = settings.get("remote_base_url").unwrap();
+    let url: String = settings.get("upload_url").unwrap();
+    let upload_file_extensions: Vec<String> = settings.get("upload_file_extensions").unwrap();
 
     loop {
         match folder_rx.try_recv() {
@@ -51,7 +52,7 @@ fn main() {
                             event: Event { kind: Modify(ModifyKind::Any), paths, .. }, ..
                         } = event {
                             for path in paths {
-                                if let Err(err) = handle_detected_file(&client, path, &url) {
+                                if let Err(err) = handle_detected_file(&client, path, &url, &upload_file_extensions) {
                                     error!("file send error: {path:?}; {err:?}")
                                 }
                             }
@@ -65,19 +66,25 @@ fn main() {
     }
 }
 
-fn handle_detected_file(client: &Client, path: &PathBuf, url: &String) -> Result<(), Box<dyn Error>> {
+fn handle_detected_file(client: &Client, path: &PathBuf, url: &String, upload_file_extensions: &Vec<String>) -> Result<(), Box<dyn Error>> {
     debug!("detect file modify {path:?}");
-    // request
-    if path.extension().unwrap_or_default() == "xls" {
-        let form = multipart::Form::new()
-            .file("file", path.clone().into_os_string().into_string().unwrap())?;
+    match path.extension() {
+        Some(ext) => {
+            let ext_str = ext.to_string_lossy().to_lowercase();
+            if upload_file_extensions.contains(&ext_str) {
+                // request
+                let form = multipart::Form::new()
+                    .file("file", path.clone().into_os_string().into_string().unwrap())?;
 
-        let res = client.post(format!("{}{}", url, "/upload"))
-            .multipart(form)
-            .send()?;
-        debug!("{:?}", res.text());
+                let res = client.post(url)
+                    .multipart(form)
+                    .send()?;
+                debug!("{:?}", res.text());
 
-        info!("sent to server success: {path:?}")
+                info!("sent to server success: {path:?}")
+            }
+        }
+        None => {}
     }
     Ok(())
 }
