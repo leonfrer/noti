@@ -1,4 +1,5 @@
 use std::error::Error;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::channel;
 use std::time::Duration;
@@ -33,15 +34,16 @@ fn main() {
     let target_path: String = settings.get("target_path").unwrap();
     debouncer
         .watcher()
-        .watch(Path::new(&target_path), RecursiveMode::NonRecursive)
+        .watch(Path::new(&target_path), RecursiveMode::Recursive)
         .unwrap();
     debouncer
         .cache()
-        .add_root(Path::new(&target_path), RecursiveMode::NonRecursive);
+        .add_root(Path::new(&target_path), RecursiveMode::Recursive);
 
     let client = Client::new();
     let url: String = settings.get("upload_url").unwrap();
     let upload_file_extensions: Vec<String> = settings.get("upload_file_extensions").unwrap();
+    let base_path = fs::canonicalize(PathBuf::from(&target_path)).unwrap();
 
     loop {
         match folder_rx.try_recv() {
@@ -52,8 +54,10 @@ fn main() {
                             event: Event { kind: Modify(ModifyKind::Any), paths, .. }, ..
                         } = event {
                             for path in paths {
-                                if let Err(err) = handle_detected_file(&client, path, &url, &upload_file_extensions) {
-                                    error!("file send error: {path:?}; {err:?}")
+                                if path.is_file() {
+                                    if let Err(err) = handle_detected_file(&client, path, &url, &base_path, &upload_file_extensions) {
+                                        error!("file send error: {path:?}; {err:?}")
+                                    }
                                 }
                             }
                         }
@@ -66,22 +70,35 @@ fn main() {
     }
 }
 
-fn handle_detected_file(client: &Client, path: &PathBuf, url: &String, upload_file_extensions: &Vec<String>) -> Result<(), Box<dyn Error>> {
+fn handle_detected_file(client: &Client, path: &PathBuf, url: &String, base_path: &PathBuf, upload_file_extensions: &Vec<String>) -> Result<(), Box<dyn Error>> {
     debug!("detect file modify {path:?}");
     match path.extension() {
         Some(ext) => {
             let ext_str = ext.to_string_lossy().to_lowercase();
             if upload_file_extensions.contains(&ext_str) {
+                let abs_path = fs::canonicalize(path).unwrap();
+                let relative_path = abs_path.strip_prefix(&base_path).unwrap();
+                info!("{relative_path:?}");
+
+                let components: Vec<String> = relative_path.parent().unwrap()
+                    .components()
+                    .map(|c| c.as_os_str().to_string_lossy().to_string())
+                    .collect();
+                let joined_components = components.join(",");
                 // request
                 let form = multipart::Form::new()
-                    .file("file", path.clone().into_os_string().into_string().unwrap())?;
+                    .file("file", path.clone().into_os_string().into_string().unwrap())?
+                    .text("path", joined_components);
 
                 let res = client.post(url)
                     .multipart(form)
                     .send()?;
-                debug!("{:?}", res.text());
-
-                info!("sent to server success: {path:?}")
+                if res.status().is_success() {
+                    info!("sent to server success: {path:?}")
+                } else {
+                    error!("sent error, file: {path:?}, Status: {:?}", res.status());
+                }
+                debug!("{:?}", res);
             }
         }
         None => {}
