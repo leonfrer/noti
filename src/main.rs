@@ -79,9 +79,12 @@ fn handle_detected_file(client: &Client, path: &PathBuf, url: &String, upload_fi
                 let res = client.post(url)
                     .multipart(form)
                     .send()?;
-                debug!("{:?}", res.text());
-
-                info!("sent to server success: {path:?}")
+                if res.status().is_success() {
+                    info!("sent to server success: {path:?}")
+                } else {
+                    error!("sent error, file: {path:?}, Status: {:?}", res.status());
+                }
+                debug!("{:?}", res);
             }
         }
         None => {}
